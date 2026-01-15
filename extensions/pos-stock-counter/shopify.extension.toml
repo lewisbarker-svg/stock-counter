@@ -1,0 +1,13 @@
+api_version = "2024-01"
+
+[[extensions]]
+type = "pos_ui_extension"
+name = "Stock Counter"
+handle = "stock-counter"
+
+  [extensions.targeting]
+  module = "./src/index.tsx"
+  target = "pos.home.tile.render"
+
+  [extensions.capabilities]
+  network_access = true

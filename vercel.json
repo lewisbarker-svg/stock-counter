@@ -1,0 +1,12 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "framework": "nextjs",
+  "regions": ["lhr1"],
+  "env": {
+    "SHOPIFY_API_KEY": "@shopify-api-key",
+    "SHOPIFY_API_SECRET": "@shopify-api-secret",
+    "SHOPIFY_ACCESS_TOKEN": "@shopify-access-token",
+    "SHOP": "panel-company.myshopify.com"
+  }
+}
