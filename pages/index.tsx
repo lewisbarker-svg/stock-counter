@@ -1,24 +1,14 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Head from 'next/head';
-import { useRouter } from 'next/router';
 
 interface Product {
   id: string;
-  productId: string;
   productTitle: string;
   variantTitle: string | null;
   sku: string;
   image: string | null;
   inventoryItemId: string;
-  inventoryLevelId: string;
   currentStock: number;
-}
-
-interface StockChange {
-  inventoryItemId: string;
-  sku: string;
-  oldValue: number;
-  newValue: number;
 }
 
 const LOCATIONS = {
@@ -30,8 +20,13 @@ const LOCATIONS = {
 
 type LocationKey = keyof typeof LOCATIONS;
 
+declare global {
+  interface Window {
+    shopify?: any;
+  }
+}
+
 export default function Home() {
-  const router = useRouter();
   const [selectedLocation, setSelectedLocation] = useState<LocationKey>('bristol');
   const [products, setProducts] = useState<Product[]>([]);
   const [stockValues, setStockValues] = useState<Record<string, string>>({});
@@ -39,36 +34,100 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [needsAuth, setNeedsAuth] = useState(false);
+  const [appReady, setAppReady] = useState(false);
 
-  // Fetch products for selected location
+  // Initialize Shopify App Bridge
+  useEffect(() => {
+    const checkShopify = () => {
+      if (window.shopify) {
+        setAppReady(true);
+      } else {
+        setTimeout(checkShopify, 100);
+      }
+    };
+    checkShopify();
+  }, []);
+
+  // Fetch products using Shopify Admin API via App Bridge
   const fetchProducts = useCallback(async (locationId: string) => {
+    if (!window.shopify) {
+      console.error('Shopify App Bridge not ready');
+      return;
+    }
+
     setLoading(true);
     try {
-      const response = await fetch(`/api/products?locationId=${locationId}`);
-      const data = await response.json();
+      const query = `
+        {
+          products(first: 250) {
+            edges {
+              node {
+                id
+                title
+                featuredImage {
+                  url
+                }
+                variants(first: 100) {
+                  edges {
+                    node {
+                      id
+                      sku
+                      title
+                      inventoryItem {
+                        id
+                        inventoryLevel(locationId: "gid://shopify/Location/${locationId}") {
+                          id
+                          quantities(names: ["available"]) {
+                            quantity
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const response = await window.shopify.graphql(query);
       
-      if (data.needsAuth) {
-        setNeedsAuth(true);
-        setLoading(false);
-        return;
+      const productList: Product[] = [];
+      
+      for (const productEdge of response.products.edges) {
+        const product = productEdge.node;
+        
+        for (const variantEdge of product.variants.edges) {
+          const variant = variantEdge.node;
+          const inventoryLevel = variant.inventoryItem?.inventoryLevel;
+          
+          if (inventoryLevel) {
+            const available = inventoryLevel.quantities?.find((q: any) => q.name === 'available');
+            productList.push({
+              id: variant.id,
+              productTitle: product.title,
+              variantTitle: variant.title !== 'Default Title' ? variant.title : null,
+              sku: variant.sku || 'No SKU',
+              image: product.featuredImage?.url || null,
+              inventoryItemId: variant.inventoryItem.id,
+              currentStock: available?.quantity || 0,
+            });
+          }
+        }
       }
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch products');
-      }
-
-      setProducts(data.products);
-      setNeedsAuth(false);
+      productList.sort((a, b) => a.sku.localeCompare(b.sku));
+      setProducts(productList);
       
-      // Initialize stock values
       const initialValues: Record<string, string> = {};
-      data.products.forEach((product: Product) => {
+      productList.forEach((product) => {
         initialValues[product.id] = product.currentStock.toString();
       });
       setStockValues(initialValues);
+      
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error fetching products:', error);
       showToast('Failed to load products', 'error');
     } finally {
       setLoading(false);
@@ -76,46 +135,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetchProducts(LOCATIONS[selectedLocation].id);
-  }, [selectedLocation, fetchProducts]);
-
-  const handleLogin = () => {
-    window.location.href = '/api/auth?shop=panel-company.myshopify.com';
-  };
-
-  // Track changes
-  const changes = useMemo(() => {
-    const changedItems: StockChange[] = [];
-    
-    products.forEach((product) => {
-      const currentValue = stockValues[product.id];
-      const originalValue = product.currentStock.toString();
-      
-      if (currentValue !== undefined && currentValue !== originalValue && currentValue !== '') {
-        changedItems.push({
-          inventoryItemId: product.inventoryItemId,
-          sku: product.sku,
-          oldValue: product.currentStock,
-          newValue: parseInt(currentValue, 10),
-        });
-      }
-    });
-    
-    return changedItems;
-  }, [products, stockValues]);
-
-  // Filter products by search
-  const filteredProducts = useMemo(() => {
-    if (!searchQuery.trim()) return products;
-    
-    const query = searchQuery.toLowerCase();
-    return products.filter(
-      (product) =>
-        product.sku.toLowerCase().includes(query) ||
-        product.productTitle.toLowerCase().includes(query) ||
-        (product.variantTitle && product.variantTitle.toLowerCase().includes(query))
-    );
-  }, [products, searchQuery]);
+    if (appReady) {
+      fetchProducts(LOCATIONS[selectedLocation].id);
+    }
+  }, [selectedLocation, appReady, fetchProducts]);
 
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
@@ -123,46 +146,69 @@ export default function Home() {
   };
 
   const handleStockChange = (productId: string, value: string) => {
-    // Only allow numbers
     if (value !== '' && !/^\d*$/.test(value)) return;
-    
-    setStockValues((prev) => ({
-      ...prev,
-      [productId]: value,
-    }));
+    setStockValues((prev) => ({ ...prev, [productId]: value }));
   };
 
+  const changes = products.filter((product) => {
+    const currentValue = stockValues[product.id];
+    return currentValue !== undefined && 
+           currentValue !== product.currentStock.toString() && 
+           currentValue !== '';
+  }).map((product) => ({
+    inventoryItemId: product.inventoryItemId,
+    sku: product.sku,
+    oldValue: product.currentStock,
+    newValue: parseInt(stockValues[product.id], 10),
+  }));
+
   const handleSave = async () => {
-    if (changes.length === 0) return;
+    if (!window.shopify || changes.length === 0) return;
     
     setSaving(true);
     
     try {
-      const updates = changes.map((change) => ({
-        inventoryItemId: change.inventoryItemId,
-        locationId: LOCATIONS[selectedLocation].id,
-        quantity: change.newValue,
-      }));
+      let success = 0;
+      let failed = 0;
 
-      const response = await fetch('/api/update-inventory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates }),
-      });
+      for (const change of changes) {
+        const mutation = `
+          mutation {
+            inventorySetQuantities(input: {
+              name: "available",
+              reason: "correction",
+              quantities: [{
+                inventoryItemId: "${change.inventoryItemId}",
+                locationId: "gid://shopify/Location/${LOCATIONS[selectedLocation].id}",
+                quantity: ${change.newValue}
+              }]
+            }) {
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+        `;
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to update inventory');
+        try {
+          const response = await window.shopify.graphql(mutation);
+          if (response.inventorySetQuantities?.userErrors?.length > 0) {
+            failed++;
+          } else {
+            success++;
+          }
+        } catch {
+          failed++;
+        }
       }
 
-      if (result.failed > 0) {
-        showToast(`Updated ${result.success}, failed ${result.failed}`, 'error');
+      if (failed > 0) {
+        showToast(`Updated ${success}, failed ${failed}`, 'error');
       } else {
-        showToast(`Successfully updated ${result.success} items`, 'success');
+        showToast(`Successfully updated ${success} items`, 'success');
       }
 
-      // Refresh data
       await fetchProducts(LOCATIONS[selectedLocation].id);
     } catch (error) {
       console.error('Save error:', error);
@@ -180,20 +226,18 @@ export default function Home() {
     setStockValues(initialValues);
   };
 
-  const handleLocationChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    if (changes.length > 0) {
-      if (!confirm('You have unsaved changes. Switch location anyway?')) {
-        return;
-      }
-    }
-    setSelectedLocation(e.target.value as LocationKey);
-  };
+  const filteredProducts = searchQuery.trim()
+    ? products.filter((product) => {
+        const query = searchQuery.toLowerCase();
+        return product.sku.toLowerCase().includes(query) ||
+               product.productTitle.toLowerCase().includes(query);
+      })
+    : products;
 
   return (
     <>
       <Head>
-        <title>Stock Counter | Panel Company</title>
-        <meta name="description" content="Update inventory counts" />
+        <title>Stock Counter</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
@@ -205,13 +249,11 @@ export default function Home() {
             <select
               id="location"
               value={selectedLocation}
-              onChange={handleLocationChange}
+              onChange={(e) => setSelectedLocation(e.target.value as LocationKey)}
               disabled={loading || saving}
             >
               {Object.entries(LOCATIONS).map(([key, loc]) => (
-                <option key={key} value={key}>
-                  {loc.name}
-                </option>
+                <option key={key} value={key}>{loc.name}</option>
               ))}
             </select>
           </div>
@@ -231,26 +273,10 @@ export default function Home() {
             <div className="spinner" />
             Loading products...
           </div>
-        ) : needsAuth ? (
-          <div className="empty-state">
-            <h3>Connect to Shopify</h3>
-            <p>Click below to authorize the app to access your inventory.</p>
-            <button 
-              className="btn btn-primary" 
-              onClick={handleLogin}
-              style={{ marginTop: '20px' }}
-            >
-              Connect to Shopify
-            </button>
-          </div>
         ) : filteredProducts.length === 0 ? (
           <div className="empty-state">
             <h3>No products found</h3>
-            <p>
-              {searchQuery
-                ? 'Try adjusting your search terms'
-                : 'No products are stocked at this location'}
-            </p>
+            <p>{searchQuery ? 'Try adjusting your search' : 'No products at this location'}</p>
           </div>
         ) : (
           <div className="products-grid">
@@ -261,12 +287,9 @@ export default function Home() {
               return (
                 <div key={product.id} className="product-card">
                   <img
-                    src={product.image || '/placeholder.png'}
+                    src={product.image || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23f0f0f0" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23999" font-size="12">No image</text></svg>'}
                     alt={product.productTitle}
                     className="product-image"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23f0f0f0" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23999" font-size="12">No image</text></svg>';
-                    }}
                   />
                   <div className="product-info">
                     <div className="product-title">
@@ -280,12 +303,10 @@ export default function Home() {
                     <div className="value">{product.currentStock}</div>
                   </div>
                   <div className="stock-input-wrapper">
-                    <label htmlFor={`stock-${product.id}`}>New Count</label>
+                    <label>New Count</label>
                     <input
-                      id={`stock-${product.id}`}
                       type="text"
                       inputMode="numeric"
-                      pattern="[0-9]*"
                       className={`stock-input ${hasChanged ? 'changed' : ''}`}
                       value={currentInputValue}
                       onChange={(e) => handleStockChange(product.id, e.target.value)}
@@ -303,18 +324,10 @@ export default function Home() {
             <strong>{changes.length}</strong> {changes.length === 1 ? 'item' : 'items'} to update
           </div>
           <div className="btn-group">
-            <button
-              className="btn btn-secondary"
-              onClick={handleDiscard}
-              disabled={saving}
-            >
+            <button className="btn btn-secondary" onClick={handleDiscard} disabled={saving}>
               Discard
             </button>
-            <button
-              className="btn btn-primary"
-              onClick={handleSave}
-              disabled={saving}
-            >
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
