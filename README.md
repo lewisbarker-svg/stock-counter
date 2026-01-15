@@ -166,3 +166,4 @@ To use this from Shopify POS:
 
 Built for Panel Company. For issues, contact your developer.
 # Stock Counter
+# Stock Counter
