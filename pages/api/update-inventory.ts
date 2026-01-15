@@ -1,7 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-const SHOP = process.env.SHOP || 'panel-company.myshopify.com';
-const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const DEFAULT_SHOP = process.env.SHOP || 'panel-company.myshopify.com';
+
+// Helper to get token from cookies
+function getAuthFromCookies(req: NextApiRequest) {
+  const cookies = req.headers.cookie || '';
+  const tokenCookie = cookies.split(';').find(c => c.trim().startsWith('shopify_access_token='));
+  const shopCookie = cookies.split(';').find(c => c.trim().startsWith('shopify_shop='));
+  
+  return {
+    accessToken: tokenCookie?.split('=')[1] || process.env.SHOPIFY_ACCESS_TOKEN,
+    shop: shopCookie?.split('=')[1] || DEFAULT_SHOP,
+  };
+}
 
 interface InventoryUpdate {
   inventoryItemId: string;
@@ -17,9 +28,14 @@ export default async function handler(
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  if (!ACCESS_TOKEN) {
-    return res.status(500).json({ error: 'Access token not configured' });
+  const { accessToken, shop } = getAuthFromCookies(req);
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'Not authenticated', needsAuth: true });
   }
+
+  const SHOP = shop;
+  const ACCESS_TOKEN = accessToken;
 
   const { updates } = req.body as { updates: InventoryUpdate[] };
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import Head from 'next/head';
+import { useRouter } from 'next/router';
 
 interface Product {
   id: string;
@@ -30,6 +31,7 @@ const LOCATIONS = {
 type LocationKey = keyof typeof LOCATIONS;
 
 export default function Home() {
+  const router = useRouter();
   const [selectedLocation, setSelectedLocation] = useState<LocationKey>('bristol');
   const [products, setProducts] = useState<Product[]>([]);
   const [stockValues, setStockValues] = useState<Record<string, string>>({});
@@ -37,6 +39,7 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [needsAuth, setNeedsAuth] = useState(false);
 
   // Fetch products for selected location
   const fetchProducts = useCallback(async (locationId: string) => {
@@ -45,11 +48,18 @@ export default function Home() {
       const response = await fetch(`/api/products?locationId=${locationId}`);
       const data = await response.json();
       
+      if (data.needsAuth) {
+        setNeedsAuth(true);
+        setLoading(false);
+        return;
+      }
+
       if (!response.ok) {
         throw new Error(data.error || 'Failed to fetch products');
       }
 
       setProducts(data.products);
+      setNeedsAuth(false);
       
       // Initialize stock values
       const initialValues: Record<string, string> = {};
@@ -68,6 +78,10 @@ export default function Home() {
   useEffect(() => {
     fetchProducts(LOCATIONS[selectedLocation].id);
   }, [selectedLocation, fetchProducts]);
+
+  const handleLogin = () => {
+    window.location.href = '/api/auth?shop=panel-company.myshopify.com';
+  };
 
   // Track changes
   const changes = useMemo(() => {
@@ -216,6 +230,18 @@ export default function Home() {
           <div className="loading">
             <div className="spinner" />
             Loading products...
+          </div>
+        ) : needsAuth ? (
+          <div className="empty-state">
+            <h3>Connect to Shopify</h3>
+            <p>Click below to authorize the app to access your inventory.</p>
+            <button 
+              className="btn btn-primary" 
+              onClick={handleLogin}
+              style={{ marginTop: '20px' }}
+            >
+              Connect to Shopify
+            </button>
           </div>
         ) : filteredProducts.length === 0 ? (
           <div className="empty-state">
